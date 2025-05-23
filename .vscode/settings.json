@@ -10,7 +10,6 @@
   "ruff.codeAction.fixViolation": {
     "enable": true
   },
-  "ruff.lint.run": "onSave",
   "cSpell.words": [
     "aiomqtt",
     "arcaea",
@@ -52,5 +51,4 @@
   ],
   "taipyStudio.gUI.elementsFilePaths": [],
   "taipyStudio.config.mainPythonFile": "config.py"
-
 }

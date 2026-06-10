@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.10-slim-bookworm
 COPY requirements.txt /tmp
 RUN apt-get update -y && \
     apt-get install --no-install-recommends -y -q \

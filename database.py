@@ -1,5 +1,6 @@
 import datetime
 import os
+from sys import version_info
 from pathlib import Path
 from textwrap import dedent
 
@@ -7,11 +8,14 @@ from pydantic import ConfigDict, computed_field
 from sqlalchemy.dialects.mysql import TEXT
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import Column, Field, Relationship, SQLModel
-from strenum import StrEnum
 
 from core import load_env
 from loggers import TZ
 
+if version_info < (3, 11):
+    from strenum import StrEnum
+else:
+    from enum import StrEnum
 load_env(Path.cwd() / "env" / "db.env")
 DATABASE_URL: str = (
     # pylint: disable=consider-using-f-string

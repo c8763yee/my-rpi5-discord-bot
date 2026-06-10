@@ -22,8 +22,8 @@ function setup_alembic(){
     # check if venv directory exists and $ALEMBIC_VENV/bin/alembic exists
     if [[ ! -d $ALEMBIC_VENV ]] || [[ ! -f $ALEMBIC_VENV/bin/alembic ]]; then
         echo "Alembic not found, create virtual environment and install alembic"
-        python3 -m venv $(dirname $(dirname "$ALEMBIC_VENV"))
-        $HOME/alembic_venv/bin/pip install alembic sqlmodel aiomysql python-dotenv
+        python3 -m venv $ALEMBIC_VENV
+        $ALEMBIC_VENV/bin/pip install alembic sqlmodel aiomysql python-dotenv
     fi
     sudo mariadb -u root -p${MYSQL_ROOT_PASSWORD} ${MYSQL_DATABASE} <<EOF
     DROP TABLE IF EXISTS alembic_version;

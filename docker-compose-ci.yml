@@ -5,6 +5,8 @@ services:
       service: test_bot
     image: bot
     container_name: bot
+    # MariaDB on the deployment host only listens on 127.0.0.1.
+    network_mode: host
     volumes:
       - /usr/bin:/usr/bin # Additional volume mount not in base
     devices:
@@ -13,4 +15,5 @@ services:
 
     environment:
       - DEBUG=False
+      - MYSQL_HOST=127.0.0.1
     restart: on-failure:10

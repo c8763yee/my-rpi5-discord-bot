@@ -3,8 +3,3 @@ services:
     extends:
       file: docker-compose.yml
       service: test_bot
-    volumes:
-      - /usr/bin:/usr/bin # Additional volume mount not in base
-    devices:
-      # Mount the /dev/vcio device for the Raspberry Pi
-      - /dev/vcio

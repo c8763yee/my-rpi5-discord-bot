@@ -7,11 +7,6 @@ services:
     container_name: bot
     # MariaDB on the deployment host only listens on 127.0.0.1.
     network_mode: host
-    volumes:
-      - /usr/bin:/usr/bin # Additional volume mount not in base
-    devices:
-      # Mount the /dev/vcio device for the Raspberry Pi
-      - /dev/vcio
 
     environment:
       - DEBUG=False

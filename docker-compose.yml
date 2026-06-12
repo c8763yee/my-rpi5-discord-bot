@@ -8,7 +8,7 @@ services:
     volumes:
       - ./logs:/app/logs:rw
       - /opt/arcaea/assets:/opt/arcaea/assets
-      - $HOME/mygo-anime:/home/user/mygo-anime
+      - ${MYGO_ANIME_PATH:-$HOME/mygo-anime}:/home/user/mygo-anime:ro
     user: user
     environment:
       - IS_DOCKER=True

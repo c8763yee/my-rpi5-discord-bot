@@ -1,5 +1,5 @@
-import subprocess
 from datetime import datetime
+from pathlib import Path
 
 import psutil
 from discord import Color, Embed
@@ -8,20 +8,22 @@ from core.classes import BaseClassMixin
 from core.models import Field
 from loggers import TZ
 
-from .const import REBOOT_TEMPERATURE, TEMPERATURE_COMMAND, WARNING_TEMPERATURE
+from .const import REBOOT_TEMPERATURE, WARNING_TEMPERATURE
 
 
 class TemperatureTooHighError(Exception): ...
 
 
 class RaspberryPiUtils(BaseClassMixin):
+    thermal_zone_path = Path("/sys/class/thermal/thermal_zone0/temp")
+
     @staticmethod
     def convert_to_gb(value: int) -> float:
         return value / 1024 / 1024 / 1024
 
     async def get_temperature(self) -> str:
-        """Get the temperature of the Raspberry Pi using the vcgencmd command."""
-        temperature = float(subprocess.check_output(TEMPERATURE_COMMAND, shell=True).decode())
+        """Get the Raspberry Pi CPU temperature from Linux thermal sysfs."""
+        temperature = float(self.thermal_zone_path.read_text(encoding="ascii").strip()) / 1000
 
         message = datetime.now(tz=TZ).strftime("[%Y-%m-%d %H:%M:%S]: ")
 

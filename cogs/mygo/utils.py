@@ -43,10 +43,19 @@ class SubtitleUtils(BaseClassMixin):
             ffprobe -select_streams v:0 -show_streams -print_format json ${episode}.mp4
         """
         video_path = Path.home() / "mygo-anime" / f"{episode}.mp4"
+        if not video_path.is_file():
+            raise FileNotFoundError(
+                f"Video file not found: {video_path}. "
+                "Ensure the host MyGO anime directory is populated and mounted into Docker."
+            )
 
-        media = ffmpeg.probe(
-            video_path, select_streams="v:0", show_streams=None, print_format="json"
-        )
+        try:
+            media = ffmpeg.probe(
+                video_path, select_streams="v:0", show_streams=None, print_format="json"
+            )
+        except ffmpeg.Error as error:
+            stderr = error.stderr.decode(errors="replace").strip()
+            raise RuntimeError(f"ffprobe failed for {video_path}: {stderr}") from error
 
         # get the first video stream
         return FFProbeResponse.model_validate(media).streams[0]

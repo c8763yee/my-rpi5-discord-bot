@@ -1,4 +1,5 @@
 import datetime
+import os
 
 import discord
 from discord.ext import tasks
@@ -53,21 +54,26 @@ class LeetCodeTasks(CogsExtension):
 
     # methods(tasks)
 
+    async def _notify_test_channel(self, content: str, **kwargs):
+        channel = self.bot.get_channel(int(os.environ["TEST_CHANNEL_ID"]))
+        if not isinstance(channel, discord.TextChannel):
+            self.logger.error("Test channel is unavailable or is not a text channel")
+            return
+
+        try:
+            await channel.send(content, **kwargs)
+        except discord.errors.Forbidden as forbidden:
+            self.logger.error(
+                "PiBot has no permission to send message in the test channel: %s", forbidden
+            )
+
     @tasks.loop(time=daily_challenge_time)
     async def fetch_daily_challenge(self):
         response = await self.utils.fetch_daily_challenge()
         embed, title = await ResponseFormatter.daily_challenge(response)
-        for channel in self.bot.get_all_channels():
-            if isinstance(channel, discord.TextChannel) is False:
-                continue
-            try:
-                await channel.send(
-                    f"@here\n :tada: **Daily LeetCode Challenge** :tada:  \n{title}", embed=embed
-                )
-            except discord.errors.Forbidden as forbidden:
-                self.logger.error(
-                    "PiBot has no permission to send message in this channel %s", forbidden
-                )
+        await self._notify_test_channel(
+            f"@here\n :tada: **Daily LeetCode Challenge** :tada:  \n{title}", embed=embed
+        )
 
     @tasks.loop(time=contest_remind_time)
     async def fetch_contest(self):
@@ -76,17 +82,9 @@ class LeetCodeTasks(CogsExtension):
         if is_success is False or len(embeds) == 0:
             return
 
-        for channel in self.bot.get_all_channels():
-            if isinstance(channel, discord.TextChannel) is False:
-                continue
-            try:
-                await channel.send(
-                    "@here\n :tada: **Upcoming LeetCode Contest** :tada:  \n", embeds=embeds
-                )
-            except discord.errors.Forbidden as forbidden:
-                self.logger.error(
-                    "PiBot has no permission to send message in this channel %s", forbidden
-                )
+        await self._notify_test_channel(
+            "@here\n :tada: **Upcoming LeetCode Contest** :tada:  \n", embeds=embeds
+        )
 
     @tasks.loop(time=biweekly_contest_start_time)
     async def biweekly_contest_start_reminder(self):
@@ -102,21 +100,13 @@ class LeetCodeTasks(CogsExtension):
             self.logger.info("No biweekly contest today")
             return
 
-        for channel in self.bot.get_all_channels():
-            if isinstance(channel, discord.TextChannel) is False:
-                continue
-            try:
-                await channel.send(
-                    "@here\n"
-                    ":tada:"
-                    "**This week of the Biweekly LeetCode Contest is started!**"
-                    ":tada:\n",
-                    embed=embed,
-                )
-            except discord.errors.Forbidden as forbidden:
-                self.logger.error(
-                    "PiBot has no permission to send message in this channel %s", forbidden
-                )
+        await self._notify_test_channel(
+            "@here\n"
+            ":tada:"
+            "**This week of the Biweekly LeetCode Contest is started!**"
+            ":tada:\n",
+            embed=embed,
+        )
 
     @tasks.loop(time=biweekly_contest_end_time)
     async def biweekly_contest_end_reminder(self):
@@ -132,21 +122,13 @@ class LeetCodeTasks(CogsExtension):
             self.logger.info("No biweekly contest today")
             return
 
-        for channel in self.bot.get_all_channels():
-            if isinstance(channel, discord.TextChannel) is False:
-                continue
-            try:
-                await channel.send(
-                    "@here\n"
-                    ":tada:"
-                    "**This week of the Biweekly LeetCode Contest will end in 15 minutes!**"
-                    ":tada:\n",
-                    embed=embed,
-                )
-            except discord.errors.Forbidden as forbidden:
-                self.logger.error(
-                    "PiBot has no permission to send message in this channel %s", forbidden
-                )
+        await self._notify_test_channel(
+            "@here\n"
+            ":tada:"
+            "**This week of the Biweekly LeetCode Contest will end in 15 minutes!**"
+            ":tada:\n",
+            embed=embed,
+        )
 
     @tasks.loop(time=weekly_contest_start_time)
     async def weekly_contest_start_reminder(self):
@@ -176,18 +158,10 @@ class LeetCodeTasks(CogsExtension):
             self.logger.info("No weekly contest today")
             return
 
-        for channel in self.bot.get_all_channels():
-            if isinstance(channel, discord.TextChannel) is False:
-                continue
-            try:
-                await channel.send(
-                    "@here\n"
-                    ":tada:"
-                    "**This week of the Weekly LeetCode Contest will end in 15 minutes!**"
-                    ":tada:\n",
-                    embed=embed,
-                )
-            except discord.errors.Forbidden as forbidden:
-                self.logger.error(
-                    "PiBot has no permission to send message in this channel %s", forbidden
-                )
+        await self._notify_test_channel(
+            "@here\n"
+            ":tada:"
+            "**This week of the Weekly LeetCode Contest will end in 15 minutes!**"
+            ":tada:\n",
+            embed=embed,
+        )

@@ -5,30 +5,17 @@ import discord
 from discord.ext import tasks
 
 from cogs import CogsExtension
+from loggers import TZ
 
 from .schema import UpcomingContest
 from .utils import LeetCodeUtils, ResponseFormatter
 
-# variables
-daily_challenge_time = datetime.time(
-    hour=8, minute=0, second=0, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-)
-biweekly_contest_start_time = datetime.time(
-    hour=22, minute=30, second=0, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-)
-biweekly_contest_end_time = datetime.time(
-    hour=23, minute=45, second=0, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-)
-weekly_contest_start_time = datetime.time(
-    hour=10, minute=30, second=0, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-)
-weekly_contest_end_time = datetime.time(
-    hour=11, minute=45, second=14, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-)
-
-contest_remind_time = datetime.time(
-    hour=10, minute=0, second=0, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-)
+daily_challenge_time = datetime.time(hour=8, minute=0, second=0, tzinfo=TZ)
+biweekly_contest_start_time = datetime.time(hour=22, minute=30, second=0, tzinfo=TZ)
+biweekly_contest_end_time = datetime.time(hour=23, minute=45, second=0, tzinfo=TZ)
+weekly_contest_start_time = datetime.time(hour=10, minute=30, second=0, tzinfo=TZ)
+weekly_contest_end_time = datetime.time(hour=11, minute=45, second=0, tzinfo=TZ)
+contest_remind_time = datetime.time(hour=10, minute=0, second=0, tzinfo=TZ)
 
 
 class LeetCodeTasks(CogsExtension):
@@ -52,10 +39,13 @@ class LeetCodeTasks(CogsExtension):
         self.weekly_contest_start_reminder.stop()
         self.weekly_contest_end_reminder.stop()
 
-    # methods(tasks)
-
     async def _notify_test_channel(self, content: str, **kwargs):
-        channel = self.bot.get_channel(int(os.environ["TEST_CHANNEL_ID"]))
+        channel_id = os.getenv("TEST_CHANNEL_ID")
+        if not channel_id:
+            self.logger.error("TEST_CHANNEL_ID is not configured.")
+            return
+
+        channel = self.bot.get_channel(int(channel_id))
         if not isinstance(channel, discord.TextChannel):
             self.logger.error("Test channel is unavailable or is not a text channel")
             return
@@ -66,6 +56,20 @@ class LeetCodeTasks(CogsExtension):
             self.logger.error(
                 "PiBot has no permission to send message in the test channel: %s", forbidden
             )
+
+    async def _send_contest_reminder(self, contest_prefix: str, notification_message: str):
+        contests: list[UpcomingContest] = await self.utils.fetch_contest()
+        target_contest = next(
+            (contest for contest in contests if contest.title.startswith(contest_prefix)),
+            None,
+        )
+
+        is_success, embed = await ResponseFormatter.parse_contest(target_contest, only_today=True)
+        if not is_success or embed is None:
+            self.logger.info("No %s today", contest_prefix.lower())
+            return
+
+        await self._notify_test_channel(notification_message, embed=embed)
 
     @tasks.loop(time=daily_challenge_time)
     async def fetch_daily_challenge(self):
@@ -79,7 +83,7 @@ class LeetCodeTasks(CogsExtension):
     async def fetch_contest(self):
         contests: list[UpcomingContest] = await self.utils.fetch_contest()
         is_success, embeds = await ResponseFormatter.parse_contests(contests, only_today=True)
-        if is_success is False or len(embeds) == 0:
+        if not is_success or not embeds:
             return
 
         await self._notify_test_channel(
@@ -88,80 +92,30 @@ class LeetCodeTasks(CogsExtension):
 
     @tasks.loop(time=biweekly_contest_start_time)
     async def biweekly_contest_start_reminder(self):
-        contests: list[UpcomingContest] = await self.utils.fetch_contest()
-        target_contest: UpcomingContest | None = None
-        for contest in contests:
-            if contest.title.startswith("Biweekly Contest"):
-                target_contest = contest
-                break
-
-        is_success, embed = await ResponseFormatter.parse_contest(target_contest, only_today=True)
-        if target_contest is None or is_success is False or embed is None:
-            self.logger.info("No biweekly contest today")
-            return
-
-        await self._notify_test_channel(
-            "@here\n"
-            ":tada:"
-            "**This week of the Biweekly LeetCode Contest is started!**"
-            ":tada:\n",
-            embed=embed,
+        await self._send_contest_reminder(
+            "Biweekly Contest",
+            "@here\n:tada:**This week of the Biweekly LeetCode Contest is started!**:tada:\n",
         )
 
     @tasks.loop(time=biweekly_contest_end_time)
     async def biweekly_contest_end_reminder(self):
-        contests: list[UpcomingContest] = await self.utils.fetch_contest()
-        target_contest: UpcomingContest = None
-        for contest in contests:
-            if contest.title.startswith("Biweekly Contest"):
-                target_contest = contest
-                break
-
-        is_success, embed = await ResponseFormatter.parse_contest(target_contest, only_today=True)
-        if target_contest is None or is_success is False or embed is None:
-            self.logger.info("No biweekly contest today")
-            return
-
-        await self._notify_test_channel(
+        await self._send_contest_reminder(
+            "Biweekly Contest",
             "@here\n"
-            ":tada:"
-            "**This week of the Biweekly LeetCode Contest will end in 15 minutes!**"
-            ":tada:\n",
-            embed=embed,
+            ":tada:**This week of the Biweekly LeetCode Contest will end in 15 minutes!**:tada:\n",
         )
 
     @tasks.loop(time=weekly_contest_start_time)
     async def weekly_contest_start_reminder(self):
-        contests: list[UpcomingContest] = await self.utils.fetch_contest()
-        target_contest: UpcomingContest = None
-        for contest in contests:
-            if contest.title.startswith("Weekly Contest"):
-                target_contest = contest
-                break
-
-        is_success, embed = await ResponseFormatter.parse_contest(target_contest, only_today=True)
-        if target_contest is None or is_success is False or embed is None:
-            self.logger.info("No weekly contest today")
-            return
+        await self._send_contest_reminder(
+            "Weekly Contest",
+            "@here\n:tada:**This week of the Weekly LeetCode Contest is started!**:tada:\n",
+        )
 
     @tasks.loop(time=weekly_contest_end_time)
     async def weekly_contest_end_reminder(self):
-        contests: list[UpcomingContest] = await self.utils.fetch_contest()
-        target_contest: UpcomingContest = None
-        for contest in contests:
-            if contest.title.startswith("Weekly Contest"):
-                target_contest = contest
-                break
-
-        is_success, embed = await ResponseFormatter.parse_contest(target_contest, only_today=True)
-        if target_contest is None or is_success is False or embed is None:
-            self.logger.info("No weekly contest today")
-            return
-
-        await self._notify_test_channel(
+        await self._send_contest_reminder(
+            "Weekly Contest",
             "@here\n"
-            ":tada:"
-            "**This week of the Weekly LeetCode Contest will end in 15 minutes!**"
-            ":tada:\n",
-            embed=embed,
+            ":tada:**This week of the Weekly LeetCode Contest will end in 15 minutes!**:tada:\n",
         )

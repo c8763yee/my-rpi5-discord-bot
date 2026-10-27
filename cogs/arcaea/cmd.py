@@ -1,32 +1,35 @@
-import os
-from pathlib import Path
-
 from discord.ext import commands
 
 from cogs import CogsExtension
-from core import load_env
 
 from .utils import APIUtils, ArcaeaResponseFormatter
-
-load_env(path=Path.cwd() / "env" / "arcaea.env")
 
 
 class ArcaeaCMD(CogsExtension):
     def __init__(self, bot, *args, **kwargs):
         super().__init__(bot, *args, **kwargs)
-        self.utils = APIUtils(
-            email=os.environ["ARCAEA_EMAIL"], password=os.environ["ARCAEA_PASSWORD"]
-        )
+        self.utils = APIUtils()
 
     async def cog_load(self):
-        await self.utils.login()
+        await self.utils.init_db()
 
     async def cog_unload(self):
         await self.utils.unload()
 
     @commands.hybrid_group(name="arc", ephemeral=True)
     async def arcaea(self, ctx: commands.Context):
-        pass
+        """Commands for Arcaea score calculation and recent play queries."""
+
+    @arcaea.command("register")
+    async def register_account(self, ctx: commands.Context, email: str, password: str):
+        await ctx.defer(ephemeral=True)
+        account, friend_count = await self.utils.register_account(email, password)
+        display = account.display_name or account.name or account.email
+        await ctx.send(
+            f"Registered Arcaea query account **{display}** "
+            f"(synced **{friend_count}** friend(s)).",
+            ephemeral=True,
+        )
 
     @arcaea.command("score2step")
     async def score_to_step(
@@ -34,7 +37,7 @@ class ArcaeaCMD(CogsExtension):
     ):
         rating = await self.utils.score_to_rating(song_rating, score)
         step = await self.utils.rating_to_step(char_step, rating)
-        await ctx.send(f"Score: {score} -> Step: {step}")
+        await ctx.send(f"Score: {score} -> Step: {step:.2f}")
 
     @arcaea.command("step2score")
     async def step_to_score(
@@ -46,11 +49,11 @@ class ArcaeaCMD(CogsExtension):
 
     @arcaea.command("recent")
     async def recent_score(self, ctx: commands.Context, user_code: str):
-        await ctx.interaction.response.defer()
+        await ctx.defer()
 
         result = await self.utils.fetch_recent(user_code)
         embed, username, *files = await ArcaeaResponseFormatter.recent_score(result)
 
-        await ctx.interaction.followup.send(
+        await ctx.send(
             f"Recent play info for user **{username}**", embed=embed, files=files
         )

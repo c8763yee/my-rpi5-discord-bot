@@ -3,12 +3,18 @@ from enum import IntEnum
 from database import (
     HS300,
     PC,
+    Emeter,
     NintendoSwitch,
     PhoneCharge,
     RaspberryPi,
     Screen2K,
     ScreenFHD,
 )
+
+MQTT_TIMEOUT: float = 10.0
+SAMPLE_INTERVAL_SECONDS: int = 5
+SECONDS_PER_HOUR: int = 3600
+WATTS_PER_KILOWATT: int = 1000
 
 
 class PlugID(IntEnum):
@@ -27,7 +33,7 @@ class MQTTQoS(IntEnum):
     EXACTLY_ONCE = 2
 
 
-plug_mapping = {
+plug_mapping: dict[PlugID, type[Emeter]] = {
     PlugID.POWER_STRIP: HS300,
     PlugID.PC: PC,
     PlugID.SCREEN_BENQ: ScreenFHD,

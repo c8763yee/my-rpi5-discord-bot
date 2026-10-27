@@ -1,4 +1,6 @@
+import asyncio
 import datetime
+import functools
 import json
 import os
 import re
@@ -21,16 +23,24 @@ load_env(path=Path.cwd() / "env" / "bot.env")
 
 with (Path.cwd() / "json_data" / "secret.json").open("r", encoding="utf-8") as f:
     script = json.load(f)
-    headers = script["headers"]
-    cookies = script["cookies"]
-    cookies["csrftoken"] = os.getenv("LEETCODE_CSRFTOKEN", None)
-    headers["x-csrftoken"] = cookies["csrftoken"]
+    headers: dict[str, str] = script["headers"]
+    cookies: dict[str, str] = script["cookies"]
+    csrf_token = os.getenv("LEETCODE_CSRFTOKEN") or ""
+    cookies["csrftoken"] = csrf_token
+    headers["x-csrftoken"] = csrf_token
 
 difficulty_color = {
     "Easy": discord.Color.green(),
     "Medium": discord.Color.gold(),
     "Hard": discord.Color.red(),
 }
+
+OPERATION_PATTERN = re.compile(r"^\s*query\s+([a-zA-Z]+)\s*\((.*)\)\s*\{")
+
+
+@functools.lru_cache(maxsize=8)
+def _load_graphql_query(relative_path: str) -> str:
+    return Path(relative_path).read_text(encoding="utf-8")
 
 
 class LeetCodeUtils(BaseClassMixin):
@@ -39,22 +49,28 @@ class LeetCodeUtils(BaseClassMixin):
         operation: str,
         query: str = "",
         pydantic_model: type[BaseModel] | None = None,
+        session: ClientSession | None = None,
         **variables,
     ) -> dict | BaseModel:
         request_body = {"operationName": operation, "variables": variables, "query": query}
 
-        async with ClientSession() as session:
-            async with session.post(
+        async def _post(active_session: ClientSession) -> dict:
+            async with active_session.post(
                 API_URL, json=request_body, headers=headers, cookies=cookies
             ) as resp:
                 try:
-                    response = await resp.json()
-
+                    return await resp.json()
                 except ContentTypeError as exc:
-                    self.logger.error("Error occurred: %s", exc)
+                    self.logger.error("Error occurred while decoding LeetCode response: %s", exc)
                     raise ValueError(
                         "Error occurred while fetching data from LeetCode API"
                     ) from exc
+
+        if session is not None:
+            response = await _post(session)
+        else:
+            async with ClientSession() as new_session:
+                response = await _post(new_session)
 
         if pydantic_model is not None:
             return pydantic_model.model_validate(response)
@@ -62,40 +78,43 @@ class LeetCodeUtils(BaseClassMixin):
         return response
 
     async def fetch_user_info(self, username: str) -> dict:
-        with Path("queries/profile_page.graphql").open(encoding="utf-8") as file:
-            user_query = file.read()
-
-        operation_name = [
-            re.match(r"^\s*query\s+([a-zA-Z]+)\s*\((.*)\)\s*{", line).group(1)
-            for line in user_query.split("\n")
-            if re.match(r"^\s*query\s+([a-zA-Z]+)\s*\((.*)\)\s*{", line) is not None
+        user_query = _load_graphql_query("queries/profile_page.graphql")
+        operation_names = [
+            match.group(1)
+            for line in user_query.splitlines()
+            if (match := OPERATION_PATTERN.match(line)) is not None
         ]
 
         now = datetime.datetime.now(tz=TZ)
-        response = {}
-        for operation in operation_name:
-            operation_response = await self._send_request_to_api(
-                operation, user_query, username=username, year=now.year, month=now.month, limit=1
+        async with ClientSession() as session:
+            results = await asyncio.gather(
+                *(
+                    self._send_request_to_api(
+                        operation,
+                        user_query,
+                        session=session,
+                        username=username,
+                        year=now.year,
+                        month=now.month,
+                        limit=1,
+                    )
+                    for operation in operation_names
+                )
             )
 
-            response[operation] = operation_response["data"]
-
-        return response
+        return {
+            operation: op_response.get("data", {})
+            for operation, op_response in zip(operation_names, results)
+        }
 
     async def fetch_daily_challenge(self) -> dict:
-        """Send embed message with leetcode daily challenge data
-        including title, difficulty, tags, link, etc.
-        """
-        with Path("queries/profile_page.graphql").open(encoding="utf-8") as file:
-            daily_challenge_query = file.read()
-
+        """Fetch LeetCode daily challenge data including title, difficulty, tags, and link."""
+        daily_challenge_query = _load_graphql_query("queries/profile_page.graphql")
         response = await self._send_request_to_api("questionOfToday", query=daily_challenge_query)
         return response["data"]
 
     async def fetch_contest(self) -> list[UpcomingContest]:
-        with Path("queries/feed.graphql").open(encoding="utf-8") as file:
-            contest_query = file.read()
-
+        contest_query = _load_graphql_query("queries/feed.graphql")
         response = await self._send_request_to_api(
             "upcomingContests", query=contest_query, pydantic_model=UpcomingContestsResponse
         )
@@ -105,52 +124,71 @@ class LeetCodeUtils(BaseClassMixin):
 class ResponseFormatter:
     @staticmethod
     async def user_info(response: dict, username: str) -> discord.Embed:
-        matched_user = response["userPublicProfile"]["matchedUser"]
-        matched_userprofile = matched_user["profile"]
+        matched_user = (response.get("userPublicProfile") or {}).get("matchedUser")
+        if not matched_user:
+            raise ValueError(f"LeetCode user `{username}` not found.")
 
-        thumbnail = matched_userprofile["userAvatar"]
-        description = matched_userprofile["aboutMe"]
-        # items
-        rating_info = response.get("userContestRankingInfo", {}).get("userContestRanking", {}) or {}
-        solved_problems = response["userProblemsSolved"]["matchedUser"]["submitStatsGlobal"][
-            "acSubmissionNum"
-        ]
-        language_count = response["languageStats"]["matchedUser"]["languageProblemCount"]
+        matched_userprofile = matched_user.get("profile") or {}
+        thumbnail = matched_userprofile.get("userAvatar")
+        description = matched_userprofile.get("aboutMe") or ""
+        display_name = (
+            matched_userprofile.get("realName") or matched_user.get("username") or username
+        )
 
-        # data processing
+        rating_info = (response.get("userContestRankingInfo") or {}).get("userContestRanking") or {}
+        solved_problems = (
+            ((response.get("userProblemsSolved") or {}).get("matchedUser") or {})
+            .get("submitStatsGlobal", {})
+            .get("acSubmissionNum", [])
+        )
+        language_count = list(
+            ((response.get("languageStats") or {}).get("matchedUser") or {}).get(
+                "languageProblemCount", []
+            )
+        )
         language_count.sort(key=lambda x: x["problemsSolved"], reverse=True)
 
-        # Fields
-        # ------------------------------------------------
-        recent_ac_list = response["recentAcSubmissions"]["recentAcSubmissionList"]
-        recent_ac = (
-            f'[{recent_ac_list[0]["title"]}]'
-            f'(https://leetcode.com/problems/{recent_ac_list[0]["titleSlug"]})'
-        )
+        recent_ac_list = (response.get("recentAcSubmissions") or {}).get(
+            "recentAcSubmissionList"
+        ) or []
+        if recent_ac_list:
+            first_ac = recent_ac_list[0]
+            recent_ac = (
+                f'[{first_ac["title"]}](https://leetcode.com/problems/{first_ac["titleSlug"]})'
+            )
+        else:
+            recent_ac = "No recent AC submissions"
 
         rank_text = (
-            str(rating_info.get("globalRanking", "N/A"))
-            + "/"
-            + str(rating_info.get("totalParticipants", "N/A"))
+            f"{rating_info.get('globalRanking', 'N/A')}/"
+            f"{rating_info.get('totalParticipants', 'N/A')}"
         )
-        # ------------------------------------------------
+        top_percentage = rating_info.get("topPercentage")
+        top_pct_str = f"{top_percentage:.2f}%" if top_percentage is not None else "N/A"
+        rating_val = rating_info.get("rating")
+        rating_str = f"{rating_val:.0f}" if isinstance(rating_val, int | float) else "N/A"
+
         rating = dedent(
-            f"""
+            f"""\
             attempts: {rating_info.get("attendedContestsCount", "N/A")}
             Rank: {rank_text}
-            Rating: {rating_info.get("rating", "N/A")}
-            Top %: {rating_info.get("topPercentage", 100):.2f}%
-            """
+            Rating: {rating_str}
+            Top %: {top_pct_str}"""
         )
 
-        solved_count = "\n".join(
-            [f"{item['difficulty']}: {item['count']}" for item in solved_problems]
+        solved_count = (
+            "\n".join(f"{item['difficulty']}: {item['count']}" for item in solved_problems)
+            or "N/A"
         )
-        languages = "\n".join(
-            [f"{item['languageName']}: {item['problemsSolved']}" for item in language_count]
+        languages = (
+            "\n".join(
+                f"{item['languageName']}: {item['problemsSolved']}" for item in language_count
+            )
+            or "N/A"
         )
+
         return await BaseClassMixin.create_embed(
-            matched_userprofile["realName"],
+            display_name,
             description,
             Field(name="Recent AC", value=recent_ac, inline=False),
             Field(name="Rating", value=rating, inline=True),
@@ -163,15 +201,15 @@ class ResponseFormatter:
 
     @staticmethod
     async def daily_challenge(response: dict) -> tuple[discord.Embed, str]:
-        question = response["activeDailyCodingChallengeQuestion"]["question"]
+        daily_data = response["activeDailyCodingChallengeQuestion"]
+        question = daily_data["question"]
         question_id = question["frontendQuestionId"]
         title = f'{question_id}. {question["title"]}'
         difficulty = question["difficulty"]
-        color = difficulty_color[difficulty]
+        color = difficulty_color.get(difficulty, discord.Color.blurple())
 
-        link = f"https://leetcode.com{response['activeDailyCodingChallengeQuestion']['link']}"
-
-        topic = ", ".join([tag["name"] for tag in question["topicTags"]])
+        link = f"https://leetcode.com{daily_data['link']}"
+        topic = ", ".join(tag["name"] for tag in question.get("topicTags", [])) or "N/A"
         ac_rate = f'{question["acRate"]:.2f}%'
 
         embed = await BaseClassMixin.create_embed(
@@ -187,10 +225,11 @@ class ResponseFormatter:
         )
         return embed, title
 
+    @classmethod
     async def parse_contest(
-        self, contest: UpcomingContest | None = None, only_today: bool = False
+        cls, contest: UpcomingContest | None = None, only_today: bool = False
     ) -> tuple[bool, discord.Embed | None]:
-        if only_today and await self.today_is_contest(contest) is False or contest is None:
+        if contest is None or (only_today and not await cls.today_is_contest(contest)):
             return False, None
 
         start_time = datetime.datetime.fromtimestamp(contest.startTime, tz=TZ)
@@ -210,15 +249,13 @@ class ResponseFormatter:
     async def parse_contests(
         cls, contests: list[UpcomingContest], only_today: bool = False
     ) -> tuple[bool, list[discord.Embed]]:
-        embeds = []
-        result = False
+        embeds: list[discord.Embed] = []
         for contest in contests:
-            is_success, embed = await cls.parse_contest(cls, contest, only_today)
-            if is_success:
+            is_success, embed = await cls.parse_contest(contest, only_today=only_today)
+            if is_success and embed is not None:
                 embeds.append(embed)
-                result = True
 
-        return result, embeds
+        return bool(embeds), embeds
 
     @staticmethod
     async def today_is_contest(contest: UpcomingContest) -> bool:

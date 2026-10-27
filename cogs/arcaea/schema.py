@@ -6,19 +6,17 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from loggers import setup_package_logger
+from loggers import TZ, setup_package_logger
 
 from .const import MAX_INT, MAX_RATING, MIN_INT, DifficultyEnum
 
 SONGS_ROOT: Path = Path("/opt/arcaea/assets/songs")
 
-
-TZ = datetime.timezone(datetime.timedelta(hours=8))
 logger = setup_package_logger("cogs.arcaea.schema")
 
 
 def ascii_validate(model: BaseModel, *fields: str) -> BaseModel:
-    """Check if all string fields are ascii."""
+    """Check if all specified string fields are ASCII only."""
     for field in fields:
         attr = getattr(model, field, None)
         if attr is None:
@@ -32,34 +30,34 @@ def ascii_validate(model: BaseModel, *fields: str) -> BaseModel:
 
 class DifficultyValidator(BaseModel):
     @model_validator(mode="after")
-    def ascii_field_check(cls, values: "Difficulty") -> "Difficulty":
-        return ascii_validate(values, "jacket_night", "bg", "bg_inverse")
+    def ascii_field_check(self) -> "Difficulty":
+        return ascii_validate(self, "jacket_night", "bg", "bg_inverse")
 
     @model_validator(mode="after")
-    def hidden_until_unlocked_check(cls, values: "Difficulty") -> "Difficulty":
-        if values.hidden_until is not None and values.hidden_until_unlocked is False:
+    def hidden_until_unlocked_check(self) -> "Difficulty":
+        if self.hidden_until is not None and self.hidden_until_unlocked is False:
             warnings.warn("hidden_until_unlocked is False but hidden_until is present")
-            logger.debug(values.model_dump_json(indent=2, exclude_none=True))
-            values.hidden_until_unlocked = True
-        return values
+            logger.debug(self.model_dump_json(indent=2, exclude_none=True))
+            self.hidden_until_unlocked = True
+        return self
 
     @model_validator(mode="after")
-    def deprecated_values(cls, values: "Difficulty") -> "Difficulty":
+    def deprecated_values(self) -> "Difficulty":
         deprecated_fields = ["plusFingers"]
         for field in deprecated_fields:
-            if getattr(values, field, None) is not None:
+            if getattr(self, field, None) is not None:
                 warnings.warn(
                     f"deprecated field {field} is present in:\n"
-                    f"{values.model_dump_json(indent=2, exclude_none=True)}"
+                    f"{self.model_dump_json(indent=2, exclude_none=True)}"
                 )
-                setattr(values, field, None)
-        return values
+                setattr(self, field, None)
+        return self
 
 
 class PacksValidator(BaseModel):
     @model_validator(mode="after")
-    def ascii_field_check(cls, values: "Packs") -> "Packs":
-        return ascii_validate(values, "id", "pack_parent")
+    def ascii_field_check(self) -> "Packs":
+        return ascii_validate(self, "id", "pack_parent")
 
 
 class SongsValidator(BaseModel):
@@ -74,72 +72,74 @@ class SongsValidator(BaseModel):
     # ------------------- pre-validation -------------------
 
     @model_validator(mode="before")
+    @classmethod
     def force_override_idx(cls, values: dict) -> dict:
-        values["idx"] = cls._generate_id()
+        if isinstance(values, dict):
+            values["idx"] = cls._generate_id()
         return values
 
     # ------------------- post-validation -------------------
 
     @model_validator(mode="after")
-    def base_difficulty_file_check(cls, songs: "Song") -> "Song":
-        for diff in songs.difficulties:
+    def base_difficulty_file_check(self) -> "Song":
+        for diff in self.difficulties:
             rating_class = diff.ratingClass
             if (
-                (SONGS_ROOT / songs.id / f"{rating_class}.aff").exists() is False
+                not (SONGS_ROOT / self.id / f"{rating_class}.aff").exists()
                 and diff.rating != -1
-                and getattr(songs, "remote_dl", False) is False
+                and not getattr(self, "remote_dl", False)
             ):
-                warnings.warn(f"base difficulty file {rating_class}.aff not found in {songs.id}")
+                warnings.warn(f"base difficulty file {rating_class}.aff not found in {self.id}")
 
-        return songs
+        return self
 
     @model_validator(mode="after")
-    def byd_local_unlock_check(cls, songs: "Song") -> "Song":
-        for diff in songs.difficulties:
-            if diff.ratingClass == DifficultyEnum.BEYOND and songs.byd_local_unlock is None:
-                songs.byd_local_unlock = True
+    def byd_local_unlock_check(self) -> "Song":
+        for diff in self.difficulties:
+            if diff.ratingClass == DifficultyEnum.BEYOND and self.byd_local_unlock is None:
+                self.byd_local_unlock = True
                 break
-        if songs.world_unlock is not None:
-            songs.byd_local_unlock = not songs.world_unlock
-        return songs
+        if self.world_unlock is not None:
+            self.byd_local_unlock = not self.world_unlock
+        return self
 
     @model_validator(mode="after")
-    def timestamp_overflow_check(cls, songs: "Song") -> "Song":
-        if songs.date > MAX_INT:
-            warnings.warn(f"timestamp overflow detected in {songs.id}, setting to current time")
-            songs.date = int(datetime.datetime.now(TZ).timestamp())
+    def timestamp_overflow_check(self) -> "Song":
+        if self.date > MAX_INT:
+            warnings.warn(f"timestamp overflow detected in {self.id}, setting to current time")
+            self.date = int(datetime.datetime.now(TZ).timestamp())
 
-        return songs
-
-    @model_validator(mode="after")
-    def ascii_field_check(cls, songs: "Song") -> "Song":
-        return ascii_validate(songs, "id", "bg", "bg_inverse")
+        return self
 
     @model_validator(mode="after")
-    def title_check(cls, songs: "Song") -> "Song":
-        if getattr(songs.title_localized, "en", None) is None:
+    def ascii_field_check(self) -> "Song":
+        return ascii_validate(self, "id", "bg", "bg_inverse")
+
+    @model_validator(mode="after")
+    def title_check(self) -> "Song":
+        if getattr(self.title_localized, "en", None) is None:
             raise ValueError("`title_localized.en` must be present")
 
-        if songs.title_localized.en and songs.title_localized.en.isascii() is False:
-            songs.title_localized.en = songs.id
+        if self.title_localized.en and not self.title_localized.en.isascii():
+            self.title_localized.en = self.id
 
-        return songs
+        return self
 
     @model_validator(mode="after")
-    def difficulties_check(cls, songs: "Song") -> "Song":
+    def difficulties_check(self) -> "Song":
         current_diff = set()
-        for diff in songs.difficulties:
+        for diff in self.difficulties:
             if diff.ratingClass in current_diff:
-                raise ValueError(f"duplicate ratingClass {diff.ratingClass} in {songs.id}")
+                raise ValueError(f"duplicate ratingClass {diff.ratingClass} in {self.id}")
 
             current_diff.add(diff.ratingClass)
 
         if DifficultyEnum.BEYOND not in current_diff:
-            songs.byd_local_unlock = None
+            self.byd_local_unlock = None
 
         if DifficultyEnum.BEYOND in current_diff and DifficultyEnum.ETERNAL in current_diff:
             raise ValueError(
-                f"ratingClass 3 and 4 cannot be present at the same time in {songs.id}"
+                f"ratingClass 3 and 4 cannot be present at the same time in {self.id}"
             )
 
         base_difference = {
@@ -149,7 +149,7 @@ class SongsValidator(BaseModel):
         }.difference(current_diff)
         if base_difference:
             for diff in base_difference:
-                songs.difficulties.append(
+                self.difficulties.append(
                     Difficulty(
                         ratingClass=diff,
                         chartDesigner="chart",
@@ -157,13 +157,13 @@ class SongsValidator(BaseModel):
                     )
                 )
 
-        songs.difficulties.sort(key=lambda x: x.ratingClass)
-        return songs
+        self.difficulties.sort(key=lambda x: x.ratingClass)
+        return self
 
     @model_validator(mode="after")
-    def rating_check(cls, songs: "Song") -> "Song":
-        song_path: Path = SONGS_ROOT / songs.id
-        for diff in songs.difficulties:
+    def rating_check(self) -> "Song":
+        song_path: Path = SONGS_ROOT / self.id
+        for diff in self.difficulties:
             aff_path = song_path / f"{diff.ratingClass}.aff"
             ogg_path = song_path / f"{diff.ratingClass}.ogg"
             jpg_path = song_path / f"{diff.ratingClass}.jpg"
@@ -176,7 +176,7 @@ class SongsValidator(BaseModel):
             if jpg_path.exists() or jpg_1080_path.exists():
                 diff.jacketOverride = True
 
-        return songs
+        return self
 
 
 class JacketLocalized(BaseModel):
@@ -189,14 +189,14 @@ class JacketLocalized(BaseModel):
 
 class Localized(BaseModel):
     @model_validator(mode="after")
-    def rename_title_localized(cls, values: "Localized") -> "Localized":
-        if getattr(values, "en", None) is None:
+    def rename_title_localized(self) -> "Localized":
+        if getattr(self, "en", None) is None:
             raise ValueError("`title_localized.en` must be present")
 
-        if values.en and values.en.isascii() is False:
-            values.zh_hant = values.ja = values.en
+        if self.en and not self.en.isascii():
+            self.zh_hant = self.ja = self.en
 
-        return values
+        return self
 
     en: str
     ja: str | None = None
@@ -212,8 +212,8 @@ class AdditionalFile(BaseModel):
 
 class DayNight(BaseModel):
     @model_validator(mode="after")
-    def ascii_field_check(cls, values: "DayNight") -> "DayNight":
-        return ascii_validate(values, "day", "night")
+    def ascii_field_check(self) -> "DayNight":
+        return ascii_validate(self, "day", "night")
 
     day: str
     night: str
@@ -263,11 +263,12 @@ class Song(SongsValidator):
     purchase: str = ""
     audioPreview: int = Field(ge=MIN_INT, le=MAX_INT)
     audioPreviewEnd: int = Field(ge=MIN_INT, le=MAX_INT)
-    side: Literal[0, 1, 2, 3]
+    side: Literal[0, 1, 2, 3, 4]
     bg: str
     bg_inverse: str | None = None
     bg_daynight: DayNight | None = None
-    date: int = Field(ge=MIN_INT, le=MAX_INT)
+    # Values above MAX_INT are repaired by timestamp_overflow_check.
+    date: int = Field(ge=MIN_INT)
     version: str
     world_unlock: bool | None = False
     remote_dl: bool | None = False
@@ -281,9 +282,10 @@ class Song(SongsValidator):
     difficulties: list[Difficulty]
     additional_files: list[AdditionalFile] | None = None
 
+
 class DeletedSong(BaseModel):
     idx: int = Field(default_factory=SongsValidator._generate_id)
-    id: str 
+    id: str
     deleted: bool
 
 

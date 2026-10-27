@@ -8,6 +8,14 @@ services:
     # MariaDB on the deployment host only listens on 127.0.0.1.
     network_mode: host
 
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
+
     environment:
       - DEBUG=False
       - MYSQL_HOST=127.0.0.1

@@ -1,33 +1,28 @@
-import os
-
 from discord.ext import commands
 
 from .tasks import RaspberryPiTasks
-from .utils import RaspberryPiUtils, StatsFormatter, TemperatureTooHighError
+from .utils import StatsFormatter, TemperatureTooHighError
 
 
 class RaspberryPiCMD(RaspberryPiTasks):
-    def __init__(self, bot, *args, **kwargs):
-        super().__init__(bot, *args, **kwargs)
-        self.utils = RaspberryPiUtils()
-
     @commands.hybrid_group(ephemeral=True)
     async def pi(self, ctx: commands.Context):
-        pass
+        """Commands for monitoring and managing the Raspberry Pi."""
 
     @commands.is_owner()
     @pi.command("reboot")
     async def reboot(self, ctx: commands.Context):
         await ctx.send("Rebooting")
-        os.system("sudo reboot")
+        self.utils.reboot()
 
     @pi.command("temp")
     async def temperature(self, ctx: commands.Context):
         try:
             message = await self.utils.get_temperature()
         except TemperatureTooHighError:
-            ctx.send("Temperature too high, rebooting")
-            os.system("sudo reboot")
+            await ctx.send("Temperature too high, rebooting")
+            self.utils.reboot()
+            return
 
         await ctx.send(message)
 
@@ -36,8 +31,9 @@ class RaspberryPiCMD(RaspberryPiTasks):
         try:
             message = await self.utils.get_stats()
         except TemperatureTooHighError:
-            ctx.send("Temperature too high, rebooting")
-            os.system("sudo reboot")
+            await ctx.send("Temperature too high, rebooting")
+            self.utils.reboot()
+            return
 
         embed = await StatsFormatter.format_stats(message)
         await ctx.send(f'[Raspberry Pi Stats] {message["now"]}', embed=embed)

@@ -1,5 +1,7 @@
+import subprocess
 from datetime import datetime
 from pathlib import Path
+from textwrap import dedent
 
 import psutil
 from discord import Color, Embed
@@ -11,7 +13,8 @@ from loggers import TZ
 from .const import REBOOT_TEMPERATURE, WARNING_TEMPERATURE
 
 
-class TemperatureTooHighError(Exception): ...
+class TemperatureTooHighError(Exception):
+    """Raised when the Raspberry Pi CPU temperature exceeds the safe reboot threshold."""
 
 
 class RaspberryPiUtils(BaseClassMixin):
@@ -19,46 +22,57 @@ class RaspberryPiUtils(BaseClassMixin):
 
     @staticmethod
     def convert_to_gb(value: int) -> float:
-        return value / 1024 / 1024 / 1024
+        return value / (1024**3)
+
+    def reboot(self) -> None:
+        """Trigger a system reboot."""
+        self.logger.warning("Executing system reboot command.")
+        subprocess.run(["sudo", "reboot"], check=False)
 
     async def get_temperature(self) -> str:
         """Get the Raspberry Pi CPU temperature from Linux thermal sysfs."""
-        temperature = float(self.thermal_zone_path.read_text(encoding="ascii").strip()) / 1000
+        raw_temp = self.thermal_zone_path.read_text(encoding="ascii").strip()
+        temperature = float(raw_temp) / 1000.0
 
-        message = datetime.now(tz=TZ).strftime("[%Y-%m-%d %H:%M:%S]: ")
+        timestamp = datetime.now(tz=TZ).strftime("[%Y-%m-%d %H:%M:%S]: ")
 
         if temperature > REBOOT_TEMPERATURE:
-            self.logger.warning("Temperature Too High: %s °C, Rebooting", temperature)
-            raise TemperatureTooHighError(f"Temperature Too High: {temperature} °C, Rebooting")
+            self.logger.warning("Temperature Too High: %.1f °C, Rebooting", temperature)
+            raise TemperatureTooHighError(f"Temperature Too High: {temperature:.1f} °C, Rebooting")
 
         if temperature > WARNING_TEMPERATURE:
-            message += f"Temperature High: {temperature} °C, Consider Rebooting or Cooling"
+            message = (
+                f"{timestamp}Temperature High: {temperature:.1f} °C, "
+                "Consider Rebooting or Cooling"
+            )
             self.logger.warning(message)
         else:
-            message += f"Temperature: {temperature} °C"
+            message = f"{timestamp}Temperature: {temperature:.1f} °C"
             self.logger.info(message)
 
         return message
 
-    async def get_stats(self):
-        """Get current stats of the Raspberry Pi using psutil and vcgencmd."""
-        memory_used = self.convert_to_gb(psutil.virtual_memory().used)
-        memory_total = self.convert_to_gb(psutil.virtual_memory().total)
+    async def get_stats(self) -> dict[str, str]:
+        """Get current stats of the Raspberry Pi using psutil and thermal sysfs."""
+        virtual_mem = psutil.virtual_memory()
+        memory_used = self.convert_to_gb(virtual_mem.used)
+        memory_total = self.convert_to_gb(virtual_mem.total)
+        memory_text = dedent(
+            f"""\
+            Percentage: {virtual_mem.percent}%
+            Used: ({memory_used:.2f}GB / {memory_total:.2f}GB)"""
+        )
 
-        memory_text = f"""
-        Percentage: {psutil.virtual_memory().percent}%
-        Used: ({memory_used:.2f}GB / {memory_total:.2f}GB)
-        """
+        disk = psutil.disk_usage("/")
+        disk_used = self.convert_to_gb(disk.used)
+        disk_total = self.convert_to_gb(disk.total)
+        disk_text = dedent(
+            f"""\
+            Percentage: {disk.percent}%
+            Used: ({disk_used:.2f}GB / {disk_total:.2f}GB)"""
+        )
 
-        disk_used = self.convert_to_gb(psutil.disk_usage("/").used)
-        disk_total = self.convert_to_gb(psutil.disk_usage("/").total)
-
-        disk_text = f"""
-        Percentage: {psutil.disk_usage("/").percent}%
-        Used: ({disk_used:.2f}GB / {disk_total:.2f}GB)
-        """
-
-        message = {
+        return {
             "now": datetime.now(tz=TZ).strftime("%Y-%m-%d %H:%M:%S"),
             "cpu_usage": f"{psutil.cpu_percent()}%",
             "memory_usage": memory_text,
@@ -66,13 +80,11 @@ class RaspberryPiUtils(BaseClassMixin):
             "temperature": await self.get_temperature(),
         }
 
-        return message
-
 
 class StatsFormatter:
     @staticmethod
-    async def format_stats(stats: dict) -> Embed:
-        embed = await BaseClassMixin.create_embed(
+    async def format_stats(stats: dict[str, str]) -> Embed:
+        return await BaseClassMixin.create_embed(
             "Raspberry Pi Statistics",
             f'Current Time: {stats["now"]}',
             Field(name="CPU Usage", value=stats["cpu_usage"], inline=False),
@@ -81,4 +93,3 @@ class StatsFormatter:
             Field(name="Temperature", value=stats["temperature"], inline=False),
             color=Color.blue(),
         )
-        return embed

@@ -152,6 +152,58 @@ class Chat(BaseSQLModel, table=True):
     history: list[ChatHistory] = Relationship(back_populates="chat", cascade_delete=True)
 
 
+# --------------- Arcaea --------------- #
+class ArcaeaAccountFriendLink(SQLModel, table=True):
+    __tablename__ = "arcaea_account_friend_link"
+    __table_args__ = {
+        "extend_existing": True,
+        "mysql_charset": "utf8mb4",
+        "mysql_default_charset": "utf8mb4",
+    }
+
+    account_id: int | None = Field(
+        default=None,
+        foreign_key="arcaea_account.ID",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    friend_id: int | None = Field(
+        default=None,
+        foreign_key="arcaea_friend.ID",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+
+
+class ArcaeaAccount(BaseSQLModel, table=True):
+    __tablename__ = "arcaea_account"
+
+    email: str = Field(unique=True, index=True, nullable=False)
+    password: str = Field(nullable=False)
+    user_id: int | None = Field(default=None, unique=True, index=True)
+    user_code: str | None = Field(default=None, index=True)
+    name: str | None = Field(default=None, index=True)
+    display_name: str | None = Field(default=None)
+    max_friend: int = Field(default=30)
+    friends: list["ArcaeaFriend"] = Relationship(
+        back_populates="accounts",
+        link_model=ArcaeaAccountFriendLink,
+    )
+
+
+class ArcaeaFriend(BaseSQLModel, table=True):
+    __tablename__ = "arcaea_friend"
+
+    user_id: int = Field(unique=True, index=True, nullable=False)
+    user_code: str | None = Field(default=None, unique=True, index=True)
+    name: str = Field(index=True, nullable=False)
+    display_name: str | None = Field(default=None)
+    accounts: list[ArcaeaAccount] = Relationship(
+        back_populates="friends",
+        link_model=ArcaeaAccountFriendLink,
+    )
+
+
 async def recreate_model():
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.drop_all)

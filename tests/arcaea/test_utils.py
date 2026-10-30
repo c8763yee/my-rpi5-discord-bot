@@ -209,6 +209,95 @@ class DatabaseAccountPoolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(used_emails, ["acc2@example.com"])
         self.assertEqual(result2["username"], "NewPlayer")
 
+    async def test_nine_digit_user_code_resolves_internal_user_id_from_db_before_arcaea_request(
+        self,
+    ):
+        async with AsyncSession(self.test_engine) as session:
+            acc1 = ArcaeaAccount(
+                email="acc1@example.com",
+                password="pw1",
+                user_id=10,
+                name="acc1",
+                max_friend=30,
+            )
+            existing_friend = ArcaeaFriend(
+                user_id=100,
+                name="existing",
+                display_name="ExistingPlayer",
+                user_code="123456789",
+            )
+            session.add_all([acc1, existing_friend])
+            await session.commit()
+
+        queried_identifiers: list[str] = []
+
+        def make_client(email: str, password: str) -> APIUtils:
+            client = APIUtils(email=email, password=password)
+            client.is_logged_in = True
+            client.login = AsyncMock()
+            client.close = AsyncMock()
+            client.get_me = AsyncMock(return_value={"user_id": 10, "name": "acc1"})
+            # Arcaea friend list omits user_code; only internal user_id is returned
+            client.get_friends = AsyncMock(
+                return_value=[
+                    {
+                        "user_id": 100,
+                        "name": "existing",
+                        "display_name": "ExistingPlayer",
+                        "recent_score": [
+                            {"song_id": "test_song", "difficulty": 2, "score": 10_000_000}
+                        ],
+                    }
+                ]
+            )
+            client.add_friend = AsyncMock(
+                return_value={"success": False, "_http_status": 200, "error_code": 602}
+            )
+            original_get_user_id = client.get_user_id
+
+            async def tracked_get_user_id(identifier: str) -> tuple[int, str]:
+                queried_identifiers.append(identifier)
+                return await original_get_user_id(identifier)
+
+            client.get_user_id = tracked_get_user_id
+            client.fetch_recent_play_info = AsyncMock(
+                return_value={"song_id": "test_song", "difficulty": 2, "score": 10_000_000}
+            )
+            return client
+
+        utils = APIUtils()
+        utils._create_client = make_client
+
+        result = await utils.fetch_recent("123456789")
+        self.assertEqual(queried_identifiers, ["100"])
+        self.assertEqual(result["username"], "ExistingPlayer")
+
+    async def test_get_user_id_resolves_nine_digit_code_from_db_when_friend_list_omits_code(
+        self,
+    ):
+        async with AsyncSession(self.test_engine) as session:
+            session.add(
+                ArcaeaFriend(
+                    user_id=100,
+                    name="existing",
+                    display_name="ExistingPlayer",
+                    user_code="123456789",
+                )
+            )
+            await session.commit()
+
+        utils = APIUtils(email="acc1@example.com", password="pw1")
+        utils.is_logged_in = True
+        utils.get_me = AsyncMock(return_value={"user_id": 10, "name": "acc1"})
+        utils.get_friends = AsyncMock(
+            return_value=[{"user_id": 100, "name": "existing", "display_name": "ExistingPlayer"}]
+        )
+        utils.add_friend = AsyncMock()
+
+        user_id, username = await utils.get_user_id("123456789")
+        self.assertEqual((user_id, username), (100, "ExistingPlayer"))
+        utils.add_friend.assert_not_awaited()
+
 
 class SongSchemaTest(unittest.TestCase):
     def test_overflowing_timestamp_is_repaired(self):

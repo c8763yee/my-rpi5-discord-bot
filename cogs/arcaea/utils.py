@@ -436,14 +436,115 @@ class APIUtils(ScoreUtils):
             finally:
                 cls._session = None
 
+    @staticmethod
+    async def _find_friend_in_db(
+        session: AsyncSession, target_user_code: str
+    ) -> ArcaeaFriend | None:
+        friend = (
+            await session.exec(
+                select(ArcaeaFriend).where(ArcaeaFriend.user_code == target_user_code)
+            )
+        ).first()
+        if friend is not None:
+            return friend
+
+        if target_user_code.isdigit():
+            friend = (
+                await session.exec(
+                    select(ArcaeaFriend).where(
+                        ArcaeaFriend.user_id == int(target_user_code)
+                    )
+                )
+            ).first()
+            if friend is not None:
+                return friend
+
+        return (
+            await session.exec(
+                select(ArcaeaFriend).where(
+                    or_(
+                        ArcaeaFriend.name == target_user_code,
+                        ArcaeaFriend.display_name == target_user_code,
+                    )
+                )
+            )
+        ).first()
+
+    @staticmethod
+    async def _find_account_in_db(
+        session: AsyncSession, target_user_code: str
+    ) -> ArcaeaAccount | None:
+        account = (
+            await session.exec(
+                select(ArcaeaAccount).where(ArcaeaAccount.user_code == target_user_code)
+            )
+        ).first()
+        if account is not None:
+            return account
+
+        if target_user_code.isdigit():
+            account = (
+                await session.exec(
+                    select(ArcaeaAccount).where(
+                        ArcaeaAccount.user_id == int(target_user_code)
+                    )
+                )
+            ).first()
+            if account is not None:
+                return account
+
+        return (
+            await session.exec(
+                select(ArcaeaAccount).where(
+                    or_(
+                        ArcaeaAccount.name == target_user_code,
+                        ArcaeaAccount.display_name == target_user_code,
+                    )
+                )
+            )
+        ).first()
+
+    async def _resolve_identifiers_from_db(
+        self, user_code: str
+    ) -> tuple[int | None, str | None]:
+        target = user_code.strip()
+        if not target:
+            return None, None
+
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                friend = await self._find_friend_in_db(session, target)
+                if friend is not None:
+                    if friend.user_code:
+                        self._friend_codes[friend.user_code] = friend.user_id
+                    self._friend_codes[target] = friend.user_id
+                    return friend.user_id, friend.user_code
+
+                account = await self._find_account_in_db(session, target)
+                if account is not None and account.user_id is not None:
+                    if account.user_code:
+                        self._friend_codes[account.user_code] = account.user_id
+                    self._friend_codes[target] = account.user_id
+                    return account.user_id, account.user_code
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None, None
+
+        return None, None
+
     async def get_user_id(self, user_code: str) -> tuple[int, str]:
+        db_user_id, db_user_code = await self._resolve_identifiers_from_db(user_code)
+
         me_value = await self.get_me()
         own_identifiers = (
             me_value.get("user_code"),
             str(me_value.get("user_id")),
             me_value.get("name"),
         )
-        if user_code in own_identifiers:
+        if (
+            (db_user_id is not None and me_value.get("user_id") == db_user_id)
+            or user_code in own_identifiers
+            or (db_user_code is not None and db_user_code in own_identifiers)
+        ):
             return me_value["user_id"], me_value.get("display_name") or me_value.get("name")
 
         friends = await self.get_friends()
@@ -454,10 +555,16 @@ class APIUtils(ScoreUtils):
                 str(friend.get("user_id")),
                 friend.get("name"),
             )
-            if user_code in identifiers or self._friend_codes.get(user_code) == friend["user_id"]:
+            if (
+                (db_user_id is not None and friend.get("user_id") == db_user_id)
+                or user_code in identifiers
+                or (db_user_code is not None and db_user_code in identifiers)
+                or self._friend_codes.get(user_code) == friend["user_id"]
+            ):
                 return friend["user_id"], friend.get("display_name") or friend["name"]
 
-        resp = await self.add_friend(user_code)
+        friend_code = db_user_code or user_code
+        resp = await self.add_friend(friend_code)
         if resp.get("success"):
             added_friends = resp.get("value", {}).get("friends", [])
             if not added_friends:
@@ -468,6 +575,7 @@ class APIUtils(ScoreUtils):
             if len(new_friends) != 1:
                 raise ValueError("Could not identify the added friend in Arcaea response")
             first_friend = new_friends[0]
+            self._friend_codes[friend_code] = first_friend["user_id"]
             self._friend_codes[user_code] = first_friend["user_id"]
             return first_friend["user_id"], first_friend.get("display_name") or first_friend["name"]
 
@@ -541,17 +649,7 @@ class APIUtils(ScoreUtils):
             raise ValueError("Target user code is required.")
 
         async with AsyncSession(engine, expire_on_commit=False) as session:
-            friend_conditions = [
-                ArcaeaFriend.user_code == target_user_code,
-                ArcaeaFriend.name == target_user_code,
-                ArcaeaFriend.display_name == target_user_code,
-            ]
-            if target_user_code.isdigit():
-                friend_conditions.append(ArcaeaFriend.user_id == int(target_user_code))
-
-            friend = (
-                await session.exec(select(ArcaeaFriend).where(or_(*friend_conditions)))
-            ).first()
+            friend = await self._find_friend_in_db(session, target_user_code)
 
             if friend is not None:
                 linked_accounts = (
@@ -585,17 +683,7 @@ class APIUtils(ScoreUtils):
                 if last_linked_err is not None and not friend.user_code:
                     raise last_linked_err
 
-            account_conditions = [
-                ArcaeaAccount.user_code == target_user_code,
-                ArcaeaAccount.name == target_user_code,
-                ArcaeaAccount.display_name == target_user_code,
-            ]
-            if target_user_code.isdigit():
-                account_conditions.append(ArcaeaAccount.user_id == int(target_user_code))
-
-            self_account = (
-                await session.exec(select(ArcaeaAccount).where(or_(*account_conditions)))
-            ).first()
+            self_account = await self._find_account_in_db(session, target_user_code)
             if self_account is not None:
                 client = self._create_client(self_account.email, self_account.password)
                 try:
@@ -634,11 +722,15 @@ class APIUtils(ScoreUtils):
                 )
 
             query_identifier = (
-                friend.user_code if (friend and friend.user_code) else target_user_code
+                str(friend.user_id) if friend is not None else target_user_code
             )
             last_error: Exception | None = None
             for account in available_accounts:
                 client = self._create_client(account.email, account.password)
+                if friend is not None:
+                    client._friend_codes[str(friend.user_id)] = friend.user_id
+                    if friend.user_code:
+                        client._friend_codes[friend.user_code] = friend.user_id
                 try:
                     target_user_id, username = await client.get_user_id(query_identifier)
                     recent_play = await client.fetch_recent_play_info(target_user_id)
@@ -650,9 +742,12 @@ class APIUtils(ScoreUtils):
                 finally:
                     await client.close()
 
-                inferred_user_code: str | None = None
-                if query_identifier not in (username, str(target_user_id)):
-                    inferred_user_code = query_identifier
+                inferred_user_code: str | None = friend.user_code if friend else None
+                if inferred_user_code is None and target_user_code not in (
+                    username,
+                    str(target_user_id),
+                ):
+                    inferred_user_code = target_user_code
 
                 friend_obj = await self._upsert_friend(
                     session,
